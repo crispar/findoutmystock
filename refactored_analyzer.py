@@ -66,38 +66,33 @@ class NaverFinanceScraper:
             page_n += 1
         return top_ranks
 
-    def get_stock_details_concurrently(self, stock_codes):
-        """ThreadPoolExecutor를 사용하여 여러 종목의 상세 정보를 동시에 가져옵니다."""
-        print("\n종목 상세 정보를 가져옵니다 (동시 처리)...")
+    def get_stock_details_sequentially(self, stock_codes):
+        """여러 종목의 상세 정보를 순차적으로 가져옵니다."""
+        print("\n종목 상세 정보를 가져옵니다 (순차 처리)...")
         results = {}
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            future_to_code = {executor.submit(self.get_stock_info, code): code for code in stock_codes}
-            for future in as_completed(future_to_code):
-                code = future_to_code[future]
-                try:
-                    results[code] = future.result()
-                except Exception as e:
-                    print(f"--> 상세 정보 조회 중 오류 발생 {code}: {e}")
-        return {k: v for k, v in results.items() if v}
+        for code in stock_codes:
+            info = self.get_stock_info(code)
+            if info:
+                results[code] = info
+        return results
 
     def get_stock_info(self, stock_code):
-        """단일 종목의 이름, 발행 주식 수, 유동 주식 비율을 가져옵니다."""
+        """단일 종목의 발행 주식 수, 유동 주식 비율 등 부가 정보를 가져옵니다."""
         url = f"https://companyinfo.stock.naver.com/company/c1010001.aspx?cmp_cd={stock_code}"
         soup = self._make_request(url)
         if not soup: return None
         try:
-            name = soup.find(id='pArea').find('span').text
+            # 이름 정보는 더 이상 여기서 가져오지 않음.
             tmp = soup.find(id='cTB11').find_all('tr')[6].td.text.replace('\r', '').replace('\n', '').replace('\t', '')
             tmp_split = re.split('/', tmp)
             if len(tmp_split) < 2: return None
 
             return {
-                'name': name,
                 'outstanding_shares': int(tmp_split[0].replace(',', '').replace('주', '').strip()),
                 'floating_ratio': float(tmp_split[1].replace('%', '').strip())
             }
         except Exception as e:
-            print(f"--> 상세 정보 파싱 오류 {stock_code}: {e}")
+            print(f"--> (정보) 부가 정보 파싱 오류 {stock_code}: {e}")
             return None
 
     def get_historical_data_concurrently(self, stock_codes, start_date, end_date):
@@ -184,6 +179,9 @@ class StockAnalyzer:
         results = []
         stock_codes = self.df.columns.get_level_values(1).unique()
 
+        # 안정적인 이름 조회를 위해 code:name 역방향 맵 생성
+        code_to_name = {v: k for k, v in self.top_stocks.items()}
+
         for code in stock_codes:
             stock_df = self.df.xs(code, level=1, axis=1).dropna()
             if stock_df.empty or '저가' not in stock_df or len(stock_df) < 2: continue
@@ -195,7 +193,8 @@ class StockAnalyzer:
             gap = yesterday_price - min_52_price
             gap_percentage = ((yesterday_price / min_52_price) - 1) * 100 if min_52_price != 0 else 0
 
-            stock_name = self.stock_details.get(code, {}).get('name', "N/A")
+            # 시가총액 목록에서 가져온 이름을 기본으로 사용
+            stock_name = code_to_name.get(code, "이름 조회 실패")
             rank = list(self.top_stocks.values()).index(code) + 1 if code in self.top_stocks.values() else 'N/A'
 
             results.append({
@@ -232,7 +231,7 @@ if __name__ == '__main__':
     today = dt.date.today()
     start_day = today - dt.timedelta(days=366)
 
-    stock_details = scraper.get_stock_details_concurrently(stock_codes)
+    stock_details = scraper.get_stock_details_sequentially(stock_codes) # 순차 처리로 변경
     historical_data = scraper.get_historical_data_concurrently(stock_codes, start_day, today)
 
     if not historical_data:
