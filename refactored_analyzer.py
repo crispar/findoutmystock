@@ -78,18 +78,33 @@ class NaverFinanceScraper:
 
     def get_stock_info(self, stock_code):
         """단일 종목의 발행 주식 수, 유동 주식 비율 등 부가 정보를 가져옵니다."""
-        url = f"https://companyinfo.stock.naver.com/company/c1010001.aspx?cmp_cd={stock_code}"
+        url = f"https://comp.wisereport.co.kr/company/c1010001.aspx?cmp_cd={stock_code}"
         soup = self._make_request(url)
         if not soup: return None
         try:
-            # 이름 정보는 더 이상 여기서 가져오지 않음.
-            tmp = soup.find(id='cTB11').find_all('tr')[6].td.text.replace('\r', '').replace('\n', '').replace('\t', '')
-            tmp_split = re.split('/', tmp)
-            if len(tmp_split) < 2: return None
+            # 헤더 텍스트를 기반으로 데이터를 찾아 안정성을 높임
+            header = soup.find('th', text=re.compile(r'발행주식수/유동주식비율'))
+            if not header:
+                print(f"--> (정보) '발행주식수' 헤더를 찾지 못했습니다 {stock_code}")
+                return None
+
+            data_cell = header.find_next_sibling('td')
+            if not data_cell:
+                print(f"--> (정보) 데이터 셀을 찾지 못했습니다 {stock_code}")
+                return None
+
+            text_content = data_cell.get_text(strip=True)
+            tmp_split = text_content.split('/')
+            if len(tmp_split) < 2:
+                print(f"--> (정보) 부가 정보 포맷 오류 {stock_code}: {text_content}")
+                return None
+
+            outstanding_shares_str = tmp_split[0].replace('주', '').replace(',', '').strip()
+            floating_ratio_str = tmp_split[1].replace('%', '').strip()
 
             return {
-                'outstanding_shares': int(tmp_split[0].replace(',', '').replace('주', '').strip()),
-                'floating_ratio': float(tmp_split[1].replace('%', '').strip())
+                'outstanding_shares': int(outstanding_shares_str),
+                'floating_ratio': float(floating_ratio_str)
             }
         except Exception as e:
             print(f"--> (정보) 부가 정보 파싱 오류 {stock_code}: {e}")
