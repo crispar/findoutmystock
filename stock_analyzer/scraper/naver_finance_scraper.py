@@ -2,7 +2,6 @@ import bs4
 from urllib.request import Request, urlopen
 import urllib.error
 import datetime as dt
-import pandas as pd
 import ssl
 import re
 import time
@@ -83,7 +82,7 @@ class NaverFinanceScraper:
         if not soup: return None
         try:
             # 헤더 텍스트를 기반으로 데이터를 찾아 안정성을 높임
-            header = soup.find('th', text=re.compile(r'발행주식수/유동주식비율'))
+            header = soup.find('th', string=re.compile(r'발행주식수/유동주식비율'))
             if not header:
                 print(f"--> (정보) '발행주식수' 헤더를 찾지 못했습니다 {stock_code}")
                 return None
@@ -157,111 +156,3 @@ class NaverFinanceScraper:
                 break # Last page
             page_n += 1
         return historical_prices
-
-class StockAnalyzer:
-    """수집된 주식 데이터를 분석하고 리포트를 생성하는 객체."""
-    def __init__(self, top_stocks, stock_details, historical_data):
-        self.top_stocks = top_stocks
-        self.stock_details = stock_details
-        self.historical_data = historical_data
-        self.df = None
-
-    def _prepare_dataframe(self):
-        """데이터를 분석에 적합한 Pandas DataFrame으로 변환하고 정제합니다."""
-        if not self.historical_data: return False
-
-        all_data = []
-        for code, prices in self.historical_data.items():
-            for date, data in prices.items():
-                all_data.append({'date': date, 'stock_code': code, **data})
-
-        if not all_data: return False
-
-        df = pd.DataFrame(all_data).set_index(['date', 'stock_code']).unstack()
-        today = dt.date.today()
-        start_day = today - dt.timedelta(days=366)
-        df = df.reindex(pd.date_range(start=start_day, end=today, freq='D'))
-        df.ffill(inplace=True); df.bfill(inplace=True)
-        self.df = df
-        return True
-
-    def run_analysis(self):
-        """52주 최저가 및 관련 지표를 계산합니다."""
-        if not self._prepare_dataframe():
-            print("분석할 데이터가 없습니다.")
-            return None
-
-        results = []
-        stock_codes = self.df.columns.get_level_values(1).unique()
-
-        # 안정적인 이름 조회를 위해 code:name 역방향 맵 생성
-        code_to_name = {v: k for k, v in self.top_stocks.items()}
-
-        for code in stock_codes:
-            stock_df = self.df.xs(code, level=1, axis=1).dropna()
-            if stock_df.empty or '저가' not in stock_df or len(stock_df) < 2: continue
-
-            min_52_date = stock_df['저가'].idxmin()
-            min_52_price = stock_df['저가'].min()
-            yesterday_price = stock_df.iloc[-2]['종가']
-
-            gap = yesterday_price - min_52_price
-            gap_percentage = ((yesterday_price / min_52_price) - 1) * 100 if min_52_price != 0 else 0
-
-            # 시가총액 목록에서 가져온 이름을 기본으로 사용
-            stock_name = code_to_name.get(code, "이름 조회 실패")
-            rank = list(self.top_stocks.values()).index(code) + 1 if code in self.top_stocks.values() else 'N/A'
-
-            results.append({
-                'Name': stock_name, 'Rank': rank,
-                'Min_52_Date': min_52_date.strftime('%Y-%m-%d'),
-                'Min_52_Price': min_52_price, 'Yesterday_Price': yesterday_price,
-                'Gap_Percentage': f"{gap_percentage:.1f}%"
-            })
-
-        if not results: return None
-        return pd.DataFrame(results).sort_values(by="Gap_Percentage", key=lambda col: col.str.replace('%', '').astype(float))
-
-import argparse
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Naver Finance 주식 분석기. 52주 최저가에 근접한 종목을 찾습니다.")
-    parser.add_argument('--market', type=str, default='KOSPI', choices=['KOSPI', 'KOSDAQ'], help="분석할 시장 (KOSPI 또는 KOSDAQ)")
-    parser.add_argument('--num-stocks', type=int, default=10, help="분석할 시가총액 상위 종목의 수 (기본값: 10)")
-
-    args = parser.parse_args()
-
-    # --- 실행 ---
-    scraper = NaverFinanceScraper(market_type=args.market)
-
-    # 1. 시가총액 상위 종목 가져오기
-    top_stocks = scraper.get_top_stocks(num_stocks=args.num_stocks)
-    if not top_stocks:
-        print("치명적 오류: 시가총액 상위 종목을 가져오지 못했습니다.")
-        exit()
-
-    stock_codes = list(top_stocks.values())
-
-    # 2. 상세 정보 및 과거 데이터 병렬로 가져오기
-    today = dt.date.today()
-    start_day = today - dt.timedelta(days=366)
-
-    stock_details = scraper.get_stock_details_sequentially(stock_codes) # 순차 처리로 변경
-    historical_data = scraper.get_historical_data_concurrently(stock_codes, start_day, today)
-
-    if not historical_data:
-        print("치명적 오류: 과거 시세 데이터를 가져오지 못했습니다.")
-        exit()
-
-    # 3. 데이터 분석
-    analyzer = StockAnalyzer(top_stocks, stock_details, historical_data)
-    final_report = analyzer.run_analysis()
-
-    # 4. 결과 출력
-    if final_report is not None:
-        print("\n--- 최종 분석 리포트 ---")
-        pd.options.display.max_rows = None
-        pd.options.display.width = 1000
-        print(final_report)
-    else:
-        print("\n분석 후 표시할 결과가 없습니다.")
