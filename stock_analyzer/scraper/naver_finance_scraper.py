@@ -7,6 +7,9 @@ import re
 import time
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
+
+logger = logging.getLogger(__name__)
 
 class NaverFinanceScraper:
     """
@@ -24,22 +27,22 @@ class NaverFinanceScraper:
 
     def _make_request(self, url):
         """지정된 URL에 HTTP 요청을 보내고 BeautifulSoup 객체를 반환합니다."""
-        time.sleep(random.uniform(0.2, 0.8))  # Polite delay
+        time.sleep(random.uniform(0.2, 0.8))
         req = Request(url, headers=self.HEADERS)
         try:
             with urlopen(req, context=self.ssl_context, timeout=10) as response:
                 encoding = 'euc-kr' if 'sise_market_sum' in url else 'utf-8'
                 return bs4.BeautifulSoup(response.read().decode(encoding, 'replace'), 'lxml')
         except Exception as e:
-            print(f"--> 요청 실패 {url}: {e}")
+            logger.warning(f"Request failed for {url}: {e}")
             return None
 
     def get_top_stocks(self, num_stocks=10):
         """시가총액 상위 종목 목록을 스크래핑합니다."""
-        print(f"시가총액 상위 {num_stocks}개 종목을 가져옵니다...")
+        logger.info(f"Fetching top {num_stocks} stocks from {'KOSPI' if self.market_code == '0' else 'KOSDAQ'} market...")
         top_ranks = {}
         page_n = 1
-        last_page = 1 # Start with 1, will be updated
+        last_page = 1
 
         while len(top_ranks) < num_stocks and page_n <= last_page:
             url = f"{self.BASE_URL}/sise/sise_market_sum.naver?sosok={self.market_code}&page={page_n}"
@@ -58,7 +61,7 @@ class NaverFinanceScraper:
                     top_ranks[name] = href.split('code=')[1]
                 if len(top_ranks) >= num_stocks: break
 
-            if page_n == 1: # Get last page number only once
+            if page_n == 1:
                 pgRR = soup.find('td', class_='pgRR')
                 last_page = int(re.search(r'page=(\d+)', pgRR.find('a')['href']).group(1)) if pgRR and pgRR.find('a') else page_n
 
@@ -67,7 +70,7 @@ class NaverFinanceScraper:
 
     def get_stock_details_sequentially(self, stock_codes):
         """여러 종목의 상세 정보를 순차적으로 가져옵니다."""
-        print("\n종목 상세 정보를 가져옵니다 (순차 처리)...")
+        logger.info("Fetching stock details sequentially...")
         results = {}
         for code in stock_codes:
             info = self.get_stock_info(code)
@@ -76,26 +79,25 @@ class NaverFinanceScraper:
         return results
 
     def get_stock_info(self, stock_code):
-        """단일 종목의 발행 주식 수, 유동 주식 비율 등 부가 정보를 가져옵니다."""
+        """단일 종목의 부가 정보를 가져옵니다."""
         url = f"https://comp.wisereport.co.kr/company/c1010001.aspx?cmp_cd={stock_code}"
         soup = self._make_request(url)
         if not soup: return None
         try:
-            # 헤더 텍스트를 기반으로 데이터를 찾아 안정성을 높임
             header = soup.find('th', string=re.compile(r'발행주식수/유동주식비율'))
             if not header:
-                print(f"--> (정보) '발행주식수' 헤더를 찾지 못했습니다 {stock_code}")
+                logger.warning(f"Could not find 'outstanding_shares' header for {stock_code}")
                 return None
 
             data_cell = header.find_next_sibling('td')
             if not data_cell:
-                print(f"--> (정보) 데이터 셀을 찾지 못했습니다 {stock_code}")
+                logger.warning(f"Could not find data cell for {stock_code}")
                 return None
 
             text_content = data_cell.get_text(strip=True)
             tmp_split = text_content.split('/')
             if len(tmp_split) < 2:
-                print(f"--> (정보) 부가 정보 포맷 오류 {stock_code}: {text_content}")
+                logger.warning(f"Unexpected supplementary info format for {stock_code}: {text_content}")
                 return None
 
             outstanding_shares_str = tmp_split[0].replace('주', '').replace(',', '').strip()
@@ -106,12 +108,12 @@ class NaverFinanceScraper:
                 'floating_ratio': float(floating_ratio_str)
             }
         except Exception as e:
-            print(f"--> (정보) 부가 정보 파싱 오류 {stock_code}: {e}")
+            logger.warning(f"Could not parse supplementary info for {stock_code}: {e}")
             return None
 
     def get_historical_data_concurrently(self, stock_codes, start_date, end_date):
         """여러 종목의 과거 시세 데이터를 동시에 가져옵니다."""
-        print("\n과거 시세 데이터를 가져옵니다 (동시 처리)...")
+        logger.info("Fetching historical price data concurrently...")
         results = {}
         with ThreadPoolExecutor(max_workers=4) as executor:
             future_to_code = {executor.submit(self.get_historical_prices, code, start_date, end_date): code for code in stock_codes}
@@ -120,7 +122,7 @@ class NaverFinanceScraper:
                 try:
                     results[code] = future.result()
                 except Exception as e:
-                    print(f"--> 과거 데이터 조회 중 오류 발생 {code}: {e}")
+                    logger.error(f"Error fetching historical data for {code}: {e}")
         return {k: v for k, v in results.items() if v}
 
     def get_historical_prices(self, stock_code, start_date, end_date):
@@ -153,6 +155,6 @@ class NaverFinanceScraper:
                     continue
 
             if soup.find('td', class_='pgRR') and soup.find('td', class_='pgRR').find('a')['href'].endswith(f'page={page_n}'):
-                break # Last page
+                break
             page_n += 1
         return historical_prices

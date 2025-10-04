@@ -1,5 +1,8 @@
 import pandas as pd
 import datetime as dt
+import logging
+
+logger = logging.getLogger(__name__)
 
 class StockAnalyzer:
     """수집된 주식 데이터를 분석하고 리포트를 생성하는 객체."""
@@ -11,14 +14,18 @@ class StockAnalyzer:
 
     def _prepare_dataframe(self):
         """데이터를 분석에 적합한 Pandas DataFrame으로 변환하고 정제합니다."""
-        if not self.historical_data: return False
+        if not self.historical_data:
+            logger.error("Historical data is empty. Cannot prepare DataFrame.")
+            return False
 
         all_data = []
         for code, prices in self.historical_data.items():
             for date, data in prices.items():
                 all_data.append({'date': date, 'stock_code': code, **data})
 
-        if not all_data: return False
+        if not all_data:
+            logger.error("No data to process into DataFrame.")
+            return False
 
         df = pd.DataFrame(all_data).set_index(['date', 'stock_code']).unstack()
         today = dt.date.today()
@@ -30,19 +37,21 @@ class StockAnalyzer:
 
     def run_analysis(self):
         """52주 최저가 및 관련 지표를 계산합니다."""
+        logger.info("Starting stock analysis...")
         if not self._prepare_dataframe():
-            print("분석할 데이터가 없습니다.")
+            logger.error("DataFrame preparation failed. Aborting analysis.")
             return None
 
         results = []
         stock_codes = self.df.columns.get_level_values(1).unique()
 
-        # 안정적인 이름 조회를 위해 code:name 역방향 맵 생성
         code_to_name = {v: k for k, v in self.top_stocks.items()}
 
         for code in stock_codes:
             stock_df = self.df.xs(code, level=1, axis=1).dropna()
-            if stock_df.empty or '저가' not in stock_df or len(stock_df) < 2: continue
+            if stock_df.empty or '저가' not in stock_df or len(stock_df) < 2:
+                logger.warning(f"Skipping analysis for {code} due to insufficient data.")
+                continue
 
             min_52_date = stock_df['저가'].idxmin()
             min_52_price = stock_df['저가'].min()
@@ -51,7 +60,6 @@ class StockAnalyzer:
             gap = yesterday_price - min_52_price
             gap_percentage = ((yesterday_price / min_52_price) - 1) * 100 if min_52_price != 0 else 0
 
-            # 시가총액 목록에서 가져온 이름을 기본으로 사용
             stock_name = code_to_name.get(code, "이름 조회 실패")
             rank = list(self.top_stocks.values()).index(code) + 1 if code in self.top_stocks.values() else 'N/A'
 
@@ -62,5 +70,9 @@ class StockAnalyzer:
                 'Gap_Percentage': f"{gap_percentage:.1f}%"
             })
 
-        if not results: return None
+        if not results:
+            logger.warning("No results to display after analysis.")
+            return None
+
+        logger.info("Stock analysis complete.")
         return pd.DataFrame(results).sort_values(by="Gap_Percentage", key=lambda col: col.str.replace('%', '').astype(float))
